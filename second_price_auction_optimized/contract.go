@@ -254,10 +254,7 @@ func (ac *EnergyAuctionContract) marshalToString(v interface{}) (string, error) 
 }
 
 func (ac *EnergyAuctionContract) checkResourceExists(ctx contractapi.TransactionContextInterface, resourceID string) error {
-	resourceKey, err := ctx.GetStub().CreateCompositeKey(resourceObjectType, []string{resourceID})
-	if err != nil {
-		return fmt.Errorf("failed to create composite key: %v", err)
-	}
+	resourceKey := ac.createCompositeKey(ctx, resourceObjectType, resourceID)
 
 	fetchedResource, err := ctx.GetStub().GetState(resourceKey)
 	if err != nil {
@@ -270,10 +267,7 @@ func (ac *EnergyAuctionContract) checkResourceExists(ctx contractapi.Transaction
 }
 
 func (ac *EnergyAuctionContract) fetchResource(ctx contractapi.TransactionContextInterface, resourceID string) (*EnergyResource, error) {
-	resourceKey, err := ctx.GetStub().CreateCompositeKey(resourceObjectType, []string{resourceID})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create composite key: %v", err)
-	}
+	resourceKey := ac.createCompositeKey(ctx, resourceObjectType, resourceID)
 
 	fetchedResource, err := ctx.GetStub().GetState(resourceKey)
 	if err != nil {
@@ -291,10 +285,7 @@ func (ac *EnergyAuctionContract) fetchResource(ctx contractapi.TransactionContex
 }
 
 func (ac *EnergyAuctionContract) fetchAuction(ctx contractapi.TransactionContextInterface, resourceID string) (*EnergyAuction, error) {
-	auctionKey, err := ctx.GetStub().CreateCompositeKey(auctionObjectType, []string{resourceID})
-	if err != nil {
-		return nil, fmt.Errorf("failed to create composite key: %v", err)
-	}
+	auctionKey := ac.createCompositeKey(ctx, auctionObjectType, resourceID)
 
 	fetchedAuction, err := ctx.GetStub().GetState(auctionKey)
 	if err != nil {
@@ -311,30 +302,27 @@ func (ac *EnergyAuctionContract) fetchAuction(ctx contractapi.TransactionContext
 	return &auction, nil
 }
 
-func (ac *EnergyAuctionContract) storeResource(ctx contractapi.TransactionContextInterface, resourceID string, resource EnergyResource) error {
-	resourceKey, err := ctx.GetStub().CreateCompositeKey(resourceObjectType, []string{resourceID})
+func (ac *EnergyAuctionContract) storeObject(ctx contractapi.TransactionContextInterface, key string, object interface{}) error {
+	objectJSON, err := json.Marshal(object)
 	if err != nil {
-		return fmt.Errorf("failed to create composite key: %v", err)
+		return fmt.Errorf("failed to marshal object: %v", err)
 	}
-
-	resourceJSON, err := json.Marshal(resource)
-	if err != nil {
-		return fmt.Errorf("failed to marshal resource: %v", err)
-	}
-	return ctx.GetStub().PutState(resourceKey, resourceJSON)
+	return ctx.GetStub().PutState(key, objectJSON)
 }
 
 func (ac *EnergyAuctionContract) storeAuction(ctx contractapi.TransactionContextInterface, resourceID string, auction EnergyAuction) error {
-	auctionKey, err := ctx.GetStub().CreateCompositeKey(auctionObjectType, []string{resourceID})
-	if err != nil {
-		return fmt.Errorf("failed to create composite key: %v", err)
-	}
+	auctionKey := ac.createCompositeKey(ctx, auctionObjectType, resourceID)
+	return ac.storeObject(ctx, auctionKey, auction)
+}
 
-	auctionJSON, err := json.Marshal(auction)
-	if err != nil {
-		return fmt.Errorf("failed to marshal auction: %v", err)
-	}
-	return ctx.GetStub().PutState(auctionKey, auctionJSON)
+func (ac *EnergyAuctionContract) storeResource(ctx contractapi.TransactionContextInterface, resourceID string, resource EnergyResource) error {
+	resourceKey := ac.createCompositeKey(ctx, resourceObjectType, resourceID)
+	return ac.storeObject(ctx, resourceKey, resource)
+}
+
+func (ac *EnergyAuctionContract) createCompositeKey(ctx contractapi.TransactionContextInterface, objectType, objectID string) string {
+	key, _ := ctx.GetStub().CreateCompositeKey(objectType, []string{objectID})
+	return key
 }
 
 func main() {

@@ -36,19 +36,8 @@ type EnergyAuctionContract struct {
 }
 
 func (ac *EnergyAuctionContract) SubmitEnergyResource(ctx contractapi.TransactionContextInterface, resourceID string, energyVolume, energyPrice float64, resourceType string) error {
-	compositeKey, err := ctx.GetStub().CreateCompositeKey("resource", []string{resourceID})
-	if err != nil {
-		return fmt.Errorf("failed to create composite key: %v", err)
-	}
-
-	fetchedResource, err := ctx.GetStub().GetState(compositeKey)
-
-	if err != nil {
-		return fmt.Errorf("failed to interact with world state: %v", err)
-	}
-
-	if fetchedResource != nil {
-		return fmt.Errorf("a resource already exists with ID: %s", resourceID)
+	if err := ac.checkResourceExists(ctx, resourceID); err != nil {
+		return err
 	}
 
 	resource := EnergyResource{
@@ -59,21 +48,19 @@ func (ac *EnergyAuctionContract) SubmitEnergyResource(ctx contractapi.Transactio
 		AuctionStatus: false,
 	}
 
-	return ac.storeResource(ctx, compositeKey, resource)
+	return ac.storeResource(ctx, resourceID, resource)
 }
 
 func (ac *EnergyAuctionContract) GetResource(ctx contractapi.TransactionContextInterface, resourceID string) (string, error) {
-	compositeKey, _ := ctx.GetStub().CreateCompositeKey("resource", []string{resourceID})
-
-	fetchedResource, err := ac.fetchAndUnmarshal(ctx, compositeKey, resourceObjectType)
+	resource, err := ac.fetchResource(ctx, resourceID)
 	if err != nil {
 		return "", err
 	}
-	return string(fetchedResource), nil
+	return ac.marshalToString(resource)
 }
 
 func (ac *EnergyAuctionContract) GetMeritOrder(ctx contractapi.TransactionContextInterface) ([]EnergyResource, error) {
-	results, err := ctx.GetStub().GetStateByPartialCompositeKey("resource", []string{})
+	results, err := ctx.GetStub().GetStateByPartialCompositeKey(resourceObjectType, []string{})
 	if err != nil {
 		return nil, err
 	}
@@ -102,10 +89,7 @@ func (ac *EnergyAuctionContract) GetMeritOrder(ctx contractapi.TransactionContex
 }
 
 func (ac *EnergyAuctionContract) StartAuction(ctx contractapi.TransactionContextInterface, resourceID string, duration int64) error {
-	resourceKey, _ := ctx.GetStub().CreateCompositeKey("resource", []string{resourceID})
-	auctionKey, _ := ctx.GetStub().CreateCompositeKey("auction", []string{resourceID})
-
-	resource, err := ac.fetchResource(ctx, resourceKey)
+	resource, err := ac.fetchResource(ctx, resourceID)
 
 	if err != nil {
 		return err
@@ -133,38 +117,32 @@ func (ac *EnergyAuctionContract) StartAuction(ctx contractapi.TransactionContext
 	}
 
 	resource.AuctionStatus = true
-	ac.storeResource(ctx, resourceKey, *resource)
-
-	return ac.storeAuction(ctx, auctionKey, auction)
+	ac.storeResource(ctx, resourceID, *resource)
+	return ac.storeAuction(ctx, resourceID, auction)
 }
 
 func (ac *EnergyAuctionContract) GetAuction(ctx contractapi.TransactionContextInterface, resourceID string) (string, error) {
-	auctionKey, _ := ctx.GetStub().CreateCompositeKey("auction", []string{resourceID})
-
-	fetchedAuction, err := ac.fetchAndUnmarshal(ctx, auctionKey, auctionObjectType)
+	auction, err := ac.fetchAuction(ctx, resourceID)
 	if err != nil {
 		return "", err
 	}
 
-	return string(fetchedAuction), nil
+	return ac.marshalToString(auction)
 }
 
 func (ac *EnergyAuctionContract) Bid(ctx contractapi.TransactionContextInterface, resourceID string, bidAmount float64) error {
-	resourceKey, _ := ctx.GetStub().CreateCompositeKey("resource", []string{resourceID})
-	auctionKey, _ := ctx.GetStub().CreateCompositeKey("auction", []string{resourceID})
-
-	resource, err := ac.fetchResource(ctx, resourceKey)
+	resource, err := ac.fetchResource(ctx, resourceID)
 	if err != nil {
 		return err
 	}
 
-	auction, err := ac.fetchAuction(ctx, auctionKey)
+	auction, err := ac.fetchAuction(ctx, resourceID)
 	if err != nil {
 		return err
 	}
 
 	if !auction.IsActive {
-		return fmt.Errorf("auction with ID %s is not active", auctionKey)
+		return fmt.Errorf("auction for resource with ID %s is not active", resourceID)
 	}
 
 	currentTimeStamp, err := ctx.GetStub().GetTxTimestamp()
@@ -193,20 +171,17 @@ func (ac *EnergyAuctionContract) Bid(ctx contractapi.TransactionContextInterface
 	auction.HighestBid = bidAmount
 	auction.HighestBidder = clientId
 
-	return ac.storeAuction(ctx, auctionKey, *auction)
+	return ac.storeAuction(ctx, resourceID, *auction)
 }
 
 func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextInterface, resourceID string) error {
-	resourceKey, _ := ctx.GetStub().CreateCompositeKey("resource", []string{resourceID})
-	auctionKey, _ := ctx.GetStub().CreateCompositeKey("auction", []string{resourceID})
-
-	auction, err := ac.fetchAuction(ctx, auctionKey)
+	auction, err := ac.fetchAuction(ctx, resourceID)
 	if err != nil {
 		return err
 	}
 
 	if !auction.IsActive {
-		return fmt.Errorf("auction with ID %s is not active", auctionKey)
+		return fmt.Errorf("auction for resource with ID %s is not active", resourceID)
 	}
 
 	currentTimeStamp, err := ctx.GetStub().GetTxTimestamp()
@@ -215,7 +190,7 @@ func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextIn
 	}
 
 	if auction.Deadline > currentTimeStamp.Seconds {
-		return fmt.Errorf("auction with ID %s has not yet expired", auctionKey)
+		return fmt.Errorf("auction for resource with ID %s has not yet expired", resourceID)
 	}
 
 	winner := auction.HighestBidder
@@ -223,9 +198,9 @@ func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextIn
 	fmt.Printf("auction has been ended. Winner: %s with a bid of: %f\n", winner, winningBid)
 
 	auction.IsActive = false
-	ac.storeAuction(ctx, auctionKey, *auction)
+	ac.storeAuction(ctx, resourceID, *auction)
 
-	resource, err := ac.fetchResource(ctx, resourceKey)
+	resource, err := ac.fetchResource(ctx, resourceID)
 	if err != nil {
 		return err
 	}
@@ -236,25 +211,36 @@ func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextIn
 		resource.IsAvailable = false
 	}
 
-	ac.storeResource(ctx, resourceKey, *resource)
+	ac.storeResource(ctx, resourceID, *resource)
 
-	return ac.storeAuction(ctx, auctionKey, *auction)
+	return ac.storeAuction(ctx, resourceID, *auction)
 }
 
 // Helper functions
-func (ac *EnergyAuctionContract) fetchAndUnmarshal(ctx contractapi.TransactionContextInterface, key, item string) ([]byte, error) {
-	fetchedState, err := ctx.GetStub().GetState(key)
+func (ac *EnergyAuctionContract) marshalToString(v interface{}) (string, error) {
+	jsonData, err := json.Marshal(v)
 	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve %s: %v", item, err)
+		return "", fmt.Errorf("failed to marshal: %v", err)
 	}
-	if fetchedState == nil {
-		return nil, fmt.Errorf("%s with ID %s does not exist", item, key)
+	return string(jsonData), nil
+}
+
+func (ac *EnergyAuctionContract) checkResourceExists(ctx contractapi.TransactionContextInterface, resourceID string) error {
+	resourceKey := ac.createCompositeKey(ctx, resourceObjectType, resourceID)
+
+	fetchedResource, err := ctx.GetStub().GetState(resourceKey)
+	if err != nil {
+		return fmt.Errorf("failed to interact with world state: %v", err)
 	}
-	return fetchedState, nil
+	if fetchedResource != nil {
+		return fmt.Errorf("a resource already exists with ID: %s", resourceID)
+	}
+	return nil
 }
 
 func (ac *EnergyAuctionContract) fetchResource(ctx contractapi.TransactionContextInterface, resourceID string) (*EnergyResource, error) {
-	resourceKey, _ := ctx.GetStub().CreateCompositeKey("resource", []string{resourceID})
+	resourceKey := ac.createCompositeKey(ctx, resourceObjectType, resourceID)
+
 	fetchedResource, err := ctx.GetStub().GetState(resourceKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve resource: %v", err)
@@ -270,14 +256,14 @@ func (ac *EnergyAuctionContract) fetchResource(ctx contractapi.TransactionContex
 	return &resource, nil
 }
 
-func (ac *EnergyAuctionContract) fetchAuction(ctx contractapi.TransactionContextInterface, auctionID string) (*EnergyAuction, error) {
-	auctionKey, _ := ctx.GetStub().CreateCompositeKey("auction", []string{auctionID})
+func (ac *EnergyAuctionContract) fetchAuction(ctx contractapi.TransactionContextInterface, resourceID string) (*EnergyAuction, error) {
+	auctionKey := ac.createCompositeKey(ctx, auctionObjectType, resourceID)
 	fetchedAuction, err := ctx.GetStub().GetState(auctionKey)
 	if err != nil {
 		return nil, fmt.Errorf("failed to retrieve auction: %v", err)
 	}
 	if fetchedAuction == nil {
-		return nil, fmt.Errorf("auction with ID %s does not exist", auctionID)
+		return nil, fmt.Errorf("auction for resource with ID %s does not exist", resourceID)
 	}
 
 	var auction EnergyAuction
@@ -287,22 +273,27 @@ func (ac *EnergyAuctionContract) fetchAuction(ctx contractapi.TransactionContext
 	return &auction, nil
 }
 
-func (ac *EnergyAuctionContract) storeResource(ctx contractapi.TransactionContextInterface, resourceID string, resource EnergyResource) error {
-	resourceKey, _ := ctx.GetStub().CreateCompositeKey("resource", []string{resourceID})
-	resourceJSON, err := json.Marshal(resource)
+func (ac *EnergyAuctionContract) storeObject(ctx contractapi.TransactionContextInterface, key string, object interface{}) error {
+	objectJSON, err := json.Marshal(object)
 	if err != nil {
-		return fmt.Errorf("failed to marshal resource: %v", err)
+		return fmt.Errorf("failed to marshal object: %v", err)
 	}
-	return ctx.GetStub().PutState(resourceKey, resourceJSON)
+	return ctx.GetStub().PutState(key, objectJSON)
 }
 
-func (ac *EnergyAuctionContract) storeAuction(ctx contractapi.TransactionContextInterface, auctionID string, auction EnergyAuction) error {
-	auctionKey, _ := ctx.GetStub().CreateCompositeKey("auction", []string{auctionID})
-	auctionJSON, err := json.Marshal(auction)
-	if err != nil {
-		return fmt.Errorf("failed to marshal auction: %v", err)
-	}
-	return ctx.GetStub().PutState(auctionKey, auctionJSON)
+func (ac *EnergyAuctionContract) storeAuction(ctx contractapi.TransactionContextInterface, resourceID string, auction EnergyAuction) error {
+	auctionKey := ac.createCompositeKey(ctx, auctionObjectType, resourceID)
+	return ac.storeObject(ctx, auctionKey, auction)
+}
+
+func (ac *EnergyAuctionContract) storeResource(ctx contractapi.TransactionContextInterface, resourceID string, resource EnergyResource) error {
+	resourceKey := ac.createCompositeKey(ctx, resourceObjectType, resourceID)
+	return ac.storeObject(ctx, resourceKey, resource)
+}
+
+func (ac *EnergyAuctionContract) createCompositeKey(ctx contractapi.TransactionContextInterface, objectType, objectID string) string {
+	key, _ := ctx.GetStub().CreateCompositeKey(objectType, []string{objectID})
+	return key
 }
 
 func main() {
