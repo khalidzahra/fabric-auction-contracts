@@ -52,15 +52,15 @@ func (ac *EnergyAuctionContract) SubmitEnergyResource(ctx contractapi.Transactio
 		AuctionStatus: false,
 	}
 
-	return ac.storeResource(ctx, resourceID, resource)
+	return ac.storeObject(ctx, resourceID, resource)
 }
 
 func (ac *EnergyAuctionContract) GetResource(ctx contractapi.TransactionContextInterface, resourceID string) (string, error) {
-	fetchedResource, err := ac.fetchAndUnmarshal(ctx, resourceID, "resource")
+	resource, err := ac.fetchResource(ctx, resourceID)
 	if err != nil {
 		return "", err
 	}
-	return string(fetchedResource), nil
+	return ac.marshalToString(resource)
 }
 
 func (ac *EnergyAuctionContract) GetMeritOrder(ctx contractapi.TransactionContextInterface) ([]EnergyResource, error) {
@@ -119,11 +119,11 @@ func (ac *EnergyAuctionContract) StartAuction(ctx contractapi.TransactionContext
 	}
 	resource.AuctionStatus = true
 
-	if err := ac.storeResource(ctx, resourceID, *resource); err != nil {
+	if err := ac.storeObject(ctx, resourceID, *resource); err != nil {
 		return err
 	}
 
-	return ac.storeAuction(ctx, "auction:"+resourceID, auction)
+	return ac.storeObject(ctx, "auction:"+resourceID, auction)
 }
 
 func (ac *EnergyAuctionContract) GetAuction(ctx contractapi.TransactionContextInterface, resourceID string) (string, error) {
@@ -189,7 +189,7 @@ func (ac *EnergyAuctionContract) Bid(ctx contractapi.TransactionContextInterface
 
 	auction.Bids = append(auction.Bids, bid)
 
-	return ac.storeAuction(ctx, auctionID, *auction)
+	return ac.storeObject(ctx, auctionID, *auction)
 }
 
 func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextInterface, resourceID string) error {
@@ -235,25 +235,14 @@ func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextIn
 		}
 	}
 
-	if err := ac.storeResource(ctx, auction.ResourceID, *resource); err != nil {
+	if err := ac.storeObject(ctx, auction.ResourceID, *resource); err != nil {
 		return err
 	}
 
-	return ac.storeAuction(ctx, auctionID, *auction)
+	return ac.storeObject(ctx, auctionID, *auction)
 }
 
 // Helper functions
-func (ac *EnergyAuctionContract) fetchAndUnmarshal(ctx contractapi.TransactionContextInterface, key, item string) ([]byte, error) {
-	fetchedState, err := ctx.GetStub().GetState(key)
-	if err != nil {
-		return nil, fmt.Errorf("failed to retrieve %s: %v", item, err)
-	}
-	if fetchedState == nil {
-		return nil, fmt.Errorf("%s with ID %s does not exist", item, key)
-	}
-	return fetchedState, nil
-}
-
 func (ac *EnergyAuctionContract) marshalToString(v interface{}) (string, error) {
 	jsonData, err := json.Marshal(v)
 	if err != nil {
@@ -305,20 +294,12 @@ func (ac *EnergyAuctionContract) fetchAuction(ctx contractapi.TransactionContext
 	return &auction, nil
 }
 
-func (ac *EnergyAuctionContract) storeResource(ctx contractapi.TransactionContextInterface, resourceID string, resource EnergyResource) error {
-	resourceJSON, err := json.Marshal(resource)
+func (ac *EnergyAuctionContract) storeObject(ctx contractapi.TransactionContextInterface, key string, object interface{}) error {
+	objectJSON, err := json.Marshal(object)
 	if err != nil {
-		return fmt.Errorf("failed to marshal resource: %v", err)
+		return fmt.Errorf("failed to marshal object: %v", err)
 	}
-	return ctx.GetStub().PutState(resourceID, resourceJSON)
-}
-
-func (ac *EnergyAuctionContract) storeAuction(ctx contractapi.TransactionContextInterface, auctionID string, auction EnergyAuction) error {
-	auctionJSON, err := json.Marshal(auction)
-	if err != nil {
-		return fmt.Errorf("failed to marshal auction: %v", err)
-	}
-	return ctx.GetStub().PutState(auctionID, auctionJSON)
+	return ctx.GetStub().PutState(key, objectJSON)
 }
 
 func main() {
