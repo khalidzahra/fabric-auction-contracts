@@ -40,14 +40,8 @@ type EnergyAuctionContract struct {
 }
 
 func (ac *EnergyAuctionContract) SubmitEnergyResource(ctx contractapi.TransactionContextInterface, resourceID string, energyVolume, energyPrice float64, resourceType string) error {
-	fetchedResource, err := ctx.GetStub().GetState(resourceID)
-
-	if err != nil {
-		return fmt.Errorf("failed to interact with world state: %v", err)
-	}
-
-	if fetchedResource != nil {
-		return fmt.Errorf("a resource already exists with ID: %s", resourceID)
+	if err := ac.checkResourceExists(ctx, resourceID); err != nil {
+		return err
 	}
 
 	resource := EnergyResource{
@@ -58,25 +52,14 @@ func (ac *EnergyAuctionContract) SubmitEnergyResource(ctx contractapi.Transactio
 		AuctionStatus: false,
 	}
 
-	resourceJSON, err := json.Marshal(resource)
-	if err != nil {
-		return fmt.Errorf("failed to marshal resource: %v", err)
-	}
-
-	return ctx.GetStub().PutState(resourceID, resourceJSON)
+	return ac.storeResource(ctx, resourceID, resource)
 }
 
 func (ac *EnergyAuctionContract) GetResource(ctx contractapi.TransactionContextInterface, resourceID string) (string, error) {
-	fetchedResource, err := ctx.GetStub().GetState(resourceID)
-
+	fetchedResource, err := ac.fetchAndUnmarshal(ctx, resourceID, "resource")
 	if err != nil {
-		return "", fmt.Errorf("failed to retrieve resource: %v", err)
+		return "", err
 	}
-
-	if fetchedResource == nil {
-		return "", fmt.Errorf("resource with ID %s does not exist", resourceID)
-	}
-
 	return string(fetchedResource), nil
 }
 
@@ -110,20 +93,9 @@ func (ac *EnergyAuctionContract) GetMeritOrder(ctx contractapi.TransactionContex
 }
 
 func (ac *EnergyAuctionContract) StartAuction(ctx contractapi.TransactionContextInterface, resourceID string, duration int64) error {
-	fetchedResource, err := ctx.GetStub().GetState(resourceID)
-
+	resource, err := ac.fetchResource(ctx, resourceID)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve resource: %v", err)
-	}
-
-	if fetchedResource == nil {
-		return fmt.Errorf("resource with ID %s does not exist", resourceID)
-	}
-
-	var resource EnergyResource
-	err = json.Unmarshal(fetchedResource, &resource)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal resource: %v", err)
+		return err
 	}
 
 	if resource.AuctionStatus {
@@ -134,116 +106,55 @@ func (ac *EnergyAuctionContract) StartAuction(ctx contractapi.TransactionContext
 		return fmt.Errorf("resource with ID %s is not available", resourceID)
 	}
 
-	currentTimeStamp, err := ctx.GetStub().GetTxTimestamp()
+	currentTimestamp, err := ctx.GetStub().GetTxTimestamp()
 	if err != nil {
 		return fmt.Errorf("failed to get current block timestamp: %v", err)
 	}
 
 	auction := EnergyAuction{
 		ResourceID: resourceID,
-		Deadline:   currentTimeStamp.Seconds + duration,
+		Deadline:   currentTimestamp.Seconds + duration,
 		Bids:       []Bid{},
 		IsActive:   true,
 	}
-
 	resource.AuctionStatus = true
-	resourceJSON, err := json.Marshal(resource)
-	if err != nil {
-		return fmt.Errorf("failed to marshal resource: %v", err)
+
+	if err := ac.storeResource(ctx, resourceID, *resource); err != nil {
+		return err
 	}
 
-	err = ctx.GetStub().PutState(resourceID, resourceJSON)
-	if err != nil {
-		return fmt.Errorf("failed to update resource: %v", err)
-	}
-
-	auctionJSON, err := json.Marshal(auction)
-	if err != nil {
-		return fmt.Errorf("failed to marshal auction: %v", err)
-	}
-
-	return ctx.GetStub().PutState("auction:"+resourceID, auctionJSON)
+	return ac.storeAuction(ctx, "auction:"+resourceID, auction)
 }
 
 func (ac *EnergyAuctionContract) GetAuction(ctx contractapi.TransactionContextInterface, resourceID string) (string, error) {
 	auctionID := "auction:" + resourceID
-
-	fetchedAuction, err := ctx.GetStub().GetState(auctionID)
-
+	auction, err := ac.fetchAuction(ctx, auctionID)
 	if err != nil {
-		return "", fmt.Errorf("failed to retrieve auction: %v", err)
+		return "", err
 	}
 
-	if fetchedAuction == nil {
-		return "", fmt.Errorf("auction with ID %s does not exist", auctionID)
-	}
-
-	var auction EnergyAuction
-	err = json.Unmarshal(fetchedAuction, &auction)
-	if err != nil {
-		return "", fmt.Errorf("failed to unmarshal auction %s: %v", auctionID, err)
-	}
-
-	currentTimeStamp, err := ctx.GetStub().GetTxTimestamp()
+	currentTimestamp, err := ctx.GetStub().GetTxTimestamp()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current block timestamp: %v", err)
 	}
 
-	if auction.Deadline > currentTimeStamp.Seconds {
-		hiddenAuction := EnergyAuction{
-			AuctionID:   auction.AuctionID,
-			ResourceID:  auction.ResourceID,
-			Deadline:    auction.Deadline,
-			Bids:        []Bid{},
-			WinnerID:    "",
-			WinnerPrice: 0,
-			IsActive:    auction.IsActive,
-		}
-
-		hiddenAuctionJSON, err := json.Marshal(hiddenAuction)
-		if err != nil {
-			return "", fmt.Errorf("failed to marshal auction: %v", err)
-		}
-
-		return string(hiddenAuctionJSON), nil
+	if auction.Deadline > currentTimestamp.Seconds {
+		auction.Bids = []Bid{}
 	}
 
-	return string(fetchedAuction), nil
+	return ac.marshalToString(auction)
 }
 
 func (ac *EnergyAuctionContract) Bid(ctx contractapi.TransactionContextInterface, resourceID string, bidAmount float64) error {
 	auctionID := "auction:" + resourceID
-
-	fetchedAuction, err := ctx.GetStub().GetState(auctionID)
-
+	auction, err := ac.fetchAuction(ctx, auctionID)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve auction: %v", err)
+		return err
 	}
 
-	if fetchedAuction == nil {
-		return fmt.Errorf("auction with ID %s does not exist", auctionID)
-	}
-
-	fetchedResource, err := ctx.GetStub().GetState(resourceID)
-
+	resource, err := ac.fetchResource(ctx, resourceID)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve resource: %v", err)
-	}
-
-	if fetchedResource == nil {
-		return fmt.Errorf("resource with ID %s does not exist", resourceID)
-	}
-
-	var resource EnergyResource
-	err = json.Unmarshal(fetchedResource, &resource)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal resource: %v", err)
-	}
-
-	var auction EnergyAuction
-	err = json.Unmarshal(fetchedAuction, &auction)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal auction: %v", err)
+		return err
 	}
 
 	if bidAmount <= resource.Price {
@@ -254,68 +165,50 @@ func (ac *EnergyAuctionContract) Bid(ctx contractapi.TransactionContextInterface
 		return fmt.Errorf("auction with ID %s is not active", auctionID)
 	}
 
-	currentTimeStamp, err := ctx.GetStub().GetTxTimestamp()
+	currentTimestamp, err := ctx.GetStub().GetTxTimestamp()
 	if err != nil {
 		return fmt.Errorf("failed to get current block timestamp: %v", err)
 	}
 
-	if auction.Deadline < currentTimeStamp.Seconds {
+	if auction.Deadline < currentTimestamp.Seconds {
 		return ac.EndAuction(ctx, resourceID)
 	}
 
-	clientId, err := ctx.GetClientIdentity().GetID()
-
+	clientID, err := ctx.GetClientIdentity().GetID()
 	if err != nil {
 		return fmt.Errorf("failed to get client ID: %v", err)
 	}
 
 	bid := Bid{
-		BidID:      auctionID + ":" + clientId + ":" + fmt.Sprint(currentTimeStamp.Seconds),
+		BidID:      fmt.Sprintf("%s:%s:%d", auctionID, clientID, currentTimestamp.Seconds),
 		ResourceID: resourceID,
-		Bidder:     clientId,
+		Bidder:     clientID,
 		BidPrice:   bidAmount,
-		Timestamp:  currentTimeStamp.Seconds,
+		Timestamp:  currentTimestamp.Seconds,
 	}
 
 	auction.Bids = append(auction.Bids, bid)
 
-	auctionJSON, err := json.Marshal(auction)
-	if err != nil {
-		return fmt.Errorf("failed to marshal auction: %v", err)
-	}
-
-	return ctx.GetStub().PutState(auctionID, auctionJSON)
+	return ac.storeAuction(ctx, auctionID, *auction)
 }
 
 func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextInterface, resourceID string) error {
 	auctionID := "auction:" + resourceID
-
-	fetchedAuction, err := ctx.GetStub().GetState(auctionID)
-
+	auction, err := ac.fetchAuction(ctx, auctionID)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve auction: %v", err)
-	}
-
-	if fetchedAuction == nil {
-		return fmt.Errorf("auction with ID %s does not exist", auctionID)
-	}
-
-	var auction EnergyAuction
-	err = json.Unmarshal(fetchedAuction, &auction)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal auction: %v", err)
+		return err
 	}
 
 	if !auction.IsActive {
 		return fmt.Errorf("auction with ID %s is not active", auctionID)
 	}
 
-	currentTimeStamp, err := ctx.GetStub().GetTxTimestamp()
+	currentTimestamp, err := ctx.GetStub().GetTxTimestamp()
 	if err != nil {
 		return fmt.Errorf("failed to get current block timestamp: %v", err)
 	}
 
-	if auction.Deadline > currentTimeStamp.Seconds {
+	if auction.Deadline > currentTimestamp.Seconds {
 		return fmt.Errorf("auction with ID %s has not yet expired", auctionID)
 	}
 
@@ -325,27 +218,15 @@ func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextIn
 
 	auction.IsActive = false
 
-	fetchedResource, err := ctx.GetStub().GetState(auction.ResourceID)
-
+	resource, err := ac.fetchResource(ctx, auction.ResourceID)
 	if err != nil {
-		return fmt.Errorf("failed to retrieve resource: %v", err)
-	}
-
-	if fetchedResource == nil {
-		return fmt.Errorf("resource with ID %s does not exist", auction.ResourceID)
-	}
-
-	var resource EnergyResource
-	err = json.Unmarshal(fetchedResource, &resource)
-	if err != nil {
-		return fmt.Errorf("failed to unmarshal resource: %v", err)
+		return err
 	}
 
 	resource.AuctionStatus = false
 
 	if len(auction.Bids) > 0 {
 		resource.IsAvailable = false
-
 		auction.WinnerID = auction.Bids[0].Bidder
 		if len(auction.Bids) > 1 {
 			auction.WinnerPrice = auction.Bids[1].BidPrice
@@ -354,26 +235,89 @@ func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextIn
 		}
 	}
 
+	if err := ac.storeResource(ctx, auction.ResourceID, *resource); err != nil {
+		return err
+	}
+
+	return ac.storeAuction(ctx, auctionID, *auction)
+}
+
+// Helper functions
+func (ac *EnergyAuctionContract) fetchAndUnmarshal(ctx contractapi.TransactionContextInterface, key, item string) ([]byte, error) {
+	fetchedState, err := ctx.GetStub().GetState(key)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve %s: %v", item, err)
+	}
+	if fetchedState == nil {
+		return nil, fmt.Errorf("%s with ID %s does not exist", item, key)
+	}
+	return fetchedState, nil
+}
+
+func (ac *EnergyAuctionContract) marshalToString(v interface{}) (string, error) {
+	jsonData, err := json.Marshal(v)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal: %v", err)
+	}
+	return string(jsonData), nil
+}
+
+func (ac *EnergyAuctionContract) checkResourceExists(ctx contractapi.TransactionContextInterface, resourceID string) error {
+	fetchedResource, err := ctx.GetStub().GetState(resourceID)
+	if err != nil {
+		return fmt.Errorf("failed to interact with world state: %v", err)
+	}
+	if fetchedResource != nil {
+		return fmt.Errorf("a resource already exists with ID: %s", resourceID)
+	}
+	return nil
+}
+
+func (ac *EnergyAuctionContract) fetchResource(ctx contractapi.TransactionContextInterface, resourceID string) (*EnergyResource, error) {
+	fetchedResource, err := ctx.GetStub().GetState(resourceID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve resource: %v", err)
+	}
+	if fetchedResource == nil {
+		return nil, fmt.Errorf("resource with ID %s does not exist", resourceID)
+	}
+
+	var resource EnergyResource
+	if err := json.Unmarshal(fetchedResource, &resource); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal resource: %v", err)
+	}
+	return &resource, nil
+}
+
+func (ac *EnergyAuctionContract) fetchAuction(ctx contractapi.TransactionContextInterface, auctionID string) (*EnergyAuction, error) {
+	fetchedAuction, err := ctx.GetStub().GetState(auctionID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to retrieve auction: %v", err)
+	}
+	if fetchedAuction == nil {
+		return nil, fmt.Errorf("auction with ID %s does not exist", auctionID)
+	}
+
+	var auction EnergyAuction
+	if err := json.Unmarshal(fetchedAuction, &auction); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal auction: %v", err)
+	}
+	return &auction, nil
+}
+
+func (ac *EnergyAuctionContract) storeResource(ctx contractapi.TransactionContextInterface, resourceID string, resource EnergyResource) error {
 	resourceJSON, err := json.Marshal(resource)
 	if err != nil {
 		return fmt.Errorf("failed to marshal resource: %v", err)
 	}
+	return ctx.GetStub().PutState(resourceID, resourceJSON)
+}
 
-	err = ctx.GetStub().PutState(auction.ResourceID, resourceJSON)
-	if err != nil {
-		return fmt.Errorf("failed to update resource: %v", err)
-	}
-
+func (ac *EnergyAuctionContract) storeAuction(ctx contractapi.TransactionContextInterface, auctionID string, auction EnergyAuction) error {
 	auctionJSON, err := json.Marshal(auction)
 	if err != nil {
 		return fmt.Errorf("failed to marshal auction: %v", err)
 	}
-
-	err = ctx.GetStub().PutState(auctionID, auctionJSON)
-	if err != nil {
-		return fmt.Errorf("failed to update auction: %v", err)
-	}
-
 	return ctx.GetStub().PutState(auctionID, auctionJSON)
 }
 
