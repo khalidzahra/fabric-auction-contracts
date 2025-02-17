@@ -186,6 +186,22 @@ func (ac *EnergyAuctionContract) Bid(ctx contractapi.TransactionContextInterface
 		return fmt.Errorf("auction with ID %s does not exist", auctionID)
 	}
 
+	fetchedResource, err := ctx.GetStub().GetState(resourceID)
+
+	if err != nil {
+		return fmt.Errorf("failed to retrieve resource: %v", err)
+	}
+
+	if fetchedResource == nil {
+		return fmt.Errorf("resource with ID %s does not exist", resourceID)
+	}
+
+	var resource EnergyResource
+	err = json.Unmarshal(fetchedResource, &resource)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal resource: %v", err)
+	}
+
 	var auction EnergyAuction
 	err = json.Unmarshal(fetchedAuction, &auction)
 	if err != nil {
@@ -203,6 +219,10 @@ func (ac *EnergyAuctionContract) Bid(ctx contractapi.TransactionContextInterface
 
 	if auction.Deadline < currentTimeStamp.Seconds {
 		return ac.EndAuction(ctx, resourceID)
+	}
+
+	if bidAmount <= resource.Price {
+		return fmt.Errorf("bid amount must be higher than resource price")
 	}
 
 	if bidAmount <= auction.HighestBid {
