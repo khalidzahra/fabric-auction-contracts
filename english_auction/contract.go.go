@@ -18,7 +18,6 @@ type EnergyResource struct {
 }
 
 type EnergyAuction struct {
-	AuctionID     string  `json:"auctionID"`
 	ResourceID    string  `json:"resourceID"`
 	Deadline      int64   `json:"deadline"`
 	HighestBid    float64 `json:"highestBid"`
@@ -70,7 +69,7 @@ func (ac *EnergyAuctionContract) GetMeritOrder(ctx contractapi.TransactionContex
 
 		var resource EnergyResource
 		err = json.Unmarshal(next.Value, &resource)
-		if err != nil {
+		if err != nil { // Not an EnergyResource object
 			return nil, err
 		}
 		resources = append(resources, resource)

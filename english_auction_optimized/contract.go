@@ -18,7 +18,6 @@ type EnergyResource struct {
 }
 
 type EnergyAuction struct {
-	AuctionID     string  `json:"auctionID"`
 	ResourceID    string  `json:"resourceID"`
 	Deadline      int64   `json:"deadline"`
 	HighestBid    float64 `json:"highestBid"`
@@ -62,7 +61,7 @@ func (ac *EnergyAuctionContract) GetResource(ctx contractapi.TransactionContextI
 func (ac *EnergyAuctionContract) GetMeritOrder(ctx contractapi.TransactionContextInterface) ([]EnergyResource, error) {
 	results, err := ctx.GetStub().GetStateByPartialCompositeKey(resourceObjectType, []string{})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to retrieve resources: %v", err)
 	}
 	defer results.Close()
 
@@ -86,6 +85,37 @@ func (ac *EnergyAuctionContract) GetMeritOrder(ctx contractapi.TransactionContex
 	})
 
 	return resources, nil
+}
+
+func (ac *EnergyAuctionContract) GetMeritOrderPaginated(ctx contractapi.TransactionContextInterface, pageSize int32, bookmark string) ([]EnergyResource, string, error) {
+	results, metadata, err := ctx.GetStub().GetStateByPartialCompositeKeyWithPagination(resourceObjectType, []string{}, pageSize, bookmark)
+	if err != nil {
+		return nil, "", fmt.Errorf("failed to retrieve resources: %v", err)
+	}
+	defer results.Close()
+
+	var resources []EnergyResource
+	for results.HasNext() {
+		next, err := results.Next()
+		if err != nil {
+			return nil, "", err
+		}
+
+		_, splitKey, err := ctx.GetStub().SplitCompositeKey(next.Key)
+		if err != nil {
+			return nil, "", err
+		}
+		resourceID := splitKey[len(splitKey)-1]
+
+		resource, err := ac.fetchResource(ctx, resourceID)
+		if err != nil {
+			return nil, "", err
+		}
+
+		resources = append(resources, *resource)
+	}
+
+	return resources, metadata.Bookmark, nil
 }
 
 func (ac *EnergyAuctionContract) StartAuction(ctx contractapi.TransactionContextInterface, resourceID string, duration int64) error {
@@ -117,8 +147,24 @@ func (ac *EnergyAuctionContract) StartAuction(ctx contractapi.TransactionContext
 	}
 
 	resource.AuctionStatus = true
-	ac.storeResource(ctx, resourceID, *resource)
-	return ac.storeAuction(ctx, resourceID, auction)
+
+	updates := make(map[string][]byte)
+
+	resourceKey := ac.createCompositeKey(ctx, resourceObjectType, resourceID)
+	resourceJSON, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("failed to marshal resource: %v", err)
+	}
+	updates[resourceKey] = resourceJSON
+
+	auctionKey := ac.createCompositeKey(ctx, auctionObjectType, resourceID)
+	auctionJSON, err := json.Marshal(auction)
+	if err != nil {
+		return fmt.Errorf("failed to marshal auction: %v", err)
+	}
+	updates[auctionKey] = auctionJSON
+
+	return ac.batchStore(ctx, updates)
 }
 
 func (ac *EnergyAuctionContract) GetAuction(ctx contractapi.TransactionContextInterface, resourceID string) (string, error) {
@@ -198,12 +244,8 @@ func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextIn
 	fmt.Printf("auction has been ended. Winner: %s with a bid of: %f\n", winner, winningBid)
 
 	auction.IsActive = false
-	ac.storeAuction(ctx, resourceID, *auction)
 
-	resource, err := ac.fetchResource(ctx, resourceID)
-	if err != nil {
-		return err
-	}
+	resource, _ := ac.fetchResource(ctx, resourceID) // There will never be an error because there is an auction associated with the resource
 
 	resource.AuctionStatus = false
 
@@ -211,9 +253,23 @@ func (ac *EnergyAuctionContract) EndAuction(ctx contractapi.TransactionContextIn
 		resource.IsAvailable = false
 	}
 
-	ac.storeResource(ctx, resourceID, *resource)
+	updates := make(map[string][]byte)
 
-	return ac.storeAuction(ctx, resourceID, *auction)
+	auctionKey := ac.createCompositeKey(ctx, auctionObjectType, resourceID)
+	auctionJSON, err := json.Marshal(auction)
+	if err != nil {
+		return fmt.Errorf("failed to marshal auction: %v", err)
+	}
+	updates[auctionKey] = auctionJSON
+
+	resourceKey := ac.createCompositeKey(ctx, resourceObjectType, resourceID)
+	resourceJSON, err := json.Marshal(resource)
+	if err != nil {
+		return fmt.Errorf("failed to marshal resource: %v", err)
+	}
+	updates[resourceKey] = resourceJSON
+
+	return ac.batchStore(ctx, updates)
 }
 
 // Helper functions
@@ -291,8 +347,17 @@ func (ac *EnergyAuctionContract) storeResource(ctx contractapi.TransactionContex
 	return ac.storeObject(ctx, resourceKey, resource)
 }
 
-func (ac *EnergyAuctionContract) createCompositeKey(ctx contractapi.TransactionContextInterface, objectType, objectID string) string {
-	key, _ := ctx.GetStub().CreateCompositeKey(objectType, []string{objectID})
+func (ac *EnergyAuctionContract) batchStore(ctx contractapi.TransactionContextInterface, updates map[string][]byte) error {
+	for key, value := range updates {
+		if err := ctx.GetStub().PutState(key, value); err != nil {
+			return fmt.Errorf("failed to update state for key %s: %v", key, err)
+		}
+	}
+	return nil
+}
+
+func (ac *EnergyAuctionContract) createCompositeKey(ctx contractapi.TransactionContextInterface, objectType string, objectAttributes ...string) string {
+	key, _ := ctx.GetStub().CreateCompositeKey(objectType, objectAttributes)
 	return key
 }
 
